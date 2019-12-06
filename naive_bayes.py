@@ -1,14 +1,27 @@
 __author__ = "Michael J. Suggs // mjsuggs@ncsu.edu"
 
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import reduce
 import json
 from typing import List, Tuple, Dict, Any, overload, Union
 
 
 class NaiveBayes:
+    """Naive Bayes net for predicting class (hyp) from all other variables.
+
+    Attributes:
+        labels:   Order-preserving dictionary mapping column number to its
+            respective label.
+        hyp:      Integer-index of the column we wish to predict (class column).
+        data:     2D list of provided data with the class column removed.
+        target:   The removed class column as a flat list.
+        tdata:    Transposition of the data matrix; also a 2D list.
+        nodes:    Dictionary mapping column number to BayesNode objects.
+        hyp_prob: Probability of each value
+    """
 
     def __init__(self, train: List[list], hyp: int, labels: List[str]=None):
+        """Inits class attributes and calculates probabilities for hyp."""
         self.labels = self.label_dict(labels)
         self.hyp = hyp
         self.data, self.target = self.split_data(train, hyp)
@@ -26,8 +39,8 @@ class NaiveBayes:
     def prob(self, varval: Dict[int, Any]) -> float:
         """Calculates the probability each column (int) takes its mapped value.
 
-        :param varval: dict of (column_number : value) mappings
-        :return:
+        :param varval: dict of (column_number : column_value) mappings
+        :return: probability that column_number will take column_value
         """
         prob = len([row for row in self.data
                     if all([row[i] == varval[i]
@@ -46,10 +59,12 @@ class NaiveBayes:
         return top / bottom
 
     def train(self):
+        """Calculates prior/conditional probabilities for each variable."""
         for i in range(len(self.tdata)):
             self.nodes[i] = BayesNode(self.tdata[i], self.target)
 
     def test(self, test_data: List[list], hyp=None) -> Tuple[list, list]:
+        """Predicts class of each observation based on trained statistics."""
         target = self.target if hyp is None else hyp
         test_data, actual = self.split_data(test_data, target)
         predicted = []
@@ -64,9 +79,10 @@ class NaiveBayes:
                     max_cls, max_prob = val, product
             predicted.append(max_cls)
 
-        return predicted, target
+        return predicted, actual
 
     def get_distributions(self) -> str:
+        """Returns the prior/conditional probabilities for each node."""
         distributions = OrderedDict()
         for i in range(len(self.labels)):
             if i < self.hyp:
@@ -78,7 +94,24 @@ class NaiveBayes:
         return json.dumps(distributions)
 
     @classmethod
+    def confusion_matrix(cls, predicted, actual) -> Dict[str, int]:
+        """Generates dict counting the number of TP/TN/FP/FN predictions."""
+        matrix: Dict[str, int] = defaultdict(int)
+        for i in range(len(predicted)):
+            pred, act = predicted[i], actual[i]
+            if (pred == 1) and (act == 1):
+                matrix['TP'] += 1
+            elif (predicted == 0) and (act == 0):
+                matrix['TN'] += 1
+            elif predicted[i] > actual[i]:
+                matrix['FP'] += 1
+            elif predicted[i] < actual[i]:
+                matrix['FN'] += 1
+        return matrix
+
+    @classmethod
     def label_dict(cls, label_list) -> OrderedDict:
+        """Generates order-preserving dict mapping labels to columns."""
         labels = OrderedDict()
         for i in range(len(label_list)):
             labels[i] = label_list[i]
@@ -129,19 +162,44 @@ class NaiveBayes:
 
 
 class BayesNode:
+    """Naive Bayes node, representing a single variable (column) in the data.
+
+    Attributes:
+        ppt:    The prior probability table for the represented variable.
+        cpt:    The conditional probability table for the represented variable.
+    """
 
     def __init__(self, evidence: list, hypothesis: list):
+        """Initiates variables, calculates priors, and trains the node."""
         self.ppt = {i: evidence.count(i) / len(evidence) for i in set(evidence)}
         self.cpt = {}
         self._train(evidence, hypothesis)
 
     def prob(self, value, given=None) -> float:
+        """Returns probability that this variable will take value `value`.
+
+        If `given` is provided, returns the probability that this variable will
+        take `value` as its value provided that we know the hypothesis has
+        taken value `given`. As this is a naive network, the only possible
+        parent is that of the hypothesis node and therefore we need not consider
+        any other nodes/variables in the network.
+
+        :param value: the variable value to retrieve the probability of
+        :param given: if present, calculates P( value | given )
+        :return:
+        """
         if given is not None:
             return self.cpt[value][given]
         else:
             return self.ppt[value]
 
-    def _train(self, evidence, hypothesis):
+    def _train(self, evidence, hypothesis) -> None:
+        """Generates the conditional probability table for this node.
+
+        :param evidence: value list for this variable in order of observation
+        :param hypothesis: value list for the hypothesis in order of observation
+        :return:
+        """
         self.cpt = {e: {h: 0 for h in set(hypothesis)} for e in set(evidence)}
         for row in map(tuple, zip(evidence, hypothesis)):
             self.cpt[row[0]][row[1]] += 1
@@ -149,5 +207,6 @@ class BayesNode:
             for h in set(hypothesis):
                 self.cpt[e][h] = self.cpt[e][h] / self.ppt[e]
 
-    def get_distribution(self):
+    def get_distribution(self) -> Tuple[dict, dict]:
+        """Returns the prior/conditional probability table of this node."""
         return self.ppt, self.cpt
