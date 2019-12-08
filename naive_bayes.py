@@ -29,6 +29,8 @@ class NaiveBayes:
         self.nodes: Dict[int, BayesNode] = {}
         self.hyp_prob = {c: self.target.count(c) / len(self.target)
                          for c in set(self.target)}
+        self.prediction = OrderedDict()
+        self.confusion = None
 
     # def prob(self, var: int, val: Any) -> float:
     #     prob = list(chain.from_iterable(
@@ -61,27 +63,39 @@ class NaiveBayes:
     def train(self):
         """Calculates prior/conditional probabilities for each variable."""
         for i in range(len(self.tdata)):
-            self.nodes[i] = BayesNode(self.tdata[i], self.target)
+            self.nodes[i] = BayesNode(self.tdata[i], self.target, self.hyp_prob)
 
     def test(self, test_data: List[list], hyp=None) -> Tuple[list, list]:
         """Predicts class of each observation based on trained statistics."""
-        target = self.target if hyp is None else hyp
+        target = self.hyp if hyp is None else hyp
+        self.prediction.clear()
         test_data, actual = self.split_data(test_data, target)
-        predicted = []
 
-        for row in test_data:
+        predicted = []
+        row_len = len(test_data[0])
+
+        for row in range(len(test_data)):
             max_cls, max_prob = 0, 0
+
             for val in set(self.target):
                 product = reduce(lambda x,y: x*y,
-                     [self.nodes[i].prob(row[i], val) for i in range(len(row))])
+                     [self.nodes[i].prob(test_data[row][i], val)
+                      for i in range(row_len)])
                 product *= self.hyp_prob[val]
                 if product > max_prob:
                     max_cls, max_prob = val, product
-            predicted.append(max_cls)
 
+            predicted.append(max_cls)
+            self.prediction[row] = {
+                'actual': actual[row],
+                'predicted': max_cls,
+                'probability': max_prob
+            }
+
+        self.confusion = self.confusion_matrix(predicted, actual)
         return predicted, actual
 
-    def get_distributions(self) -> str:
+    def get_distributions(self) -> OrderedDict:
         """Returns the prior/conditional probabilities for each node."""
         distributions = OrderedDict()
         for i in range(len(self.labels)):
@@ -91,7 +105,42 @@ class NaiveBayes:
                 distributions.update({self.labels[i]: self.nodes[i]})
             else:
                 distributions.update({self.labels[i+1]: self.nodes[i+1]})
-        return json.dumps(distributions)
+        return distributions
+
+    def write_model(self, mfile: str):
+        with open(mfile, 'w') as f:
+            header = "{:10s} | {:10s} | {:10s}\n".format("LABEL", "GIVEN",
+                                                         "DISTRIBUTION")
+            hyp_label = self.labels[self.hyp]
+            f.write(header)
+            f.write("=" * (len(header) - 1) + "\n")
+            for label, node in self.get_distributions().items():
+                ppt, cpt = node.tabulate_distribution()
+                f.write("{: <10s} | {: <10s} | {: >10s}\n".format(label, hyp_label, "problty."))
+                f.write(str("="*36 + "\n"))
+                for row in ppt:
+                    f.write("{: <10s} | {: <10s} | {: >10f}\n".format(
+                        row[0], "", row[1]))
+                for row in cpt:
+                    f.write("{: <10s} | {: <10s} | {: >10f}\n".format(
+                        row[0], row[1], row[2]))
+
+    def write_results(self, rfile: str):
+        with open(rfile, 'w') as f:
+            header = "{:10s} | {:10s} | {:12s}".format(
+                'ACTUAL', 'PREDICTED', 'PROBABILITY')
+            f.write(header + "\n")
+            f.write("="*len(header) + "\n")
+            for key, val in self.prediction.items():
+                f.write("{:10s} | {:10s} | {:12f}\n".format(
+                    val['actual'],
+                    val['predicted'],
+                    val['probability']
+                ))
+
+            f.write("\n\nCONFUSION MATRIX\n\n")
+            for k, v in self.confusion:
+                f.write("{: <5s} : {: >5s}\n".format(k, v))
 
     @classmethod
     def confusion_matrix(cls, predicted, actual) -> Dict[str, int]:
@@ -169,11 +218,11 @@ class BayesNode:
         cpt:    The conditional probability table for the represented variable.
     """
 
-    def __init__(self, evidence: list, hypothesis: list):
+    def __init__(self, evidence: list, hypothesis: list, hprob: dict):
         """Initiates variables, calculates priors, and trains the node."""
         self.ppt = {i: evidence.count(i) / len(evidence) for i in set(evidence)}
         self.cpt = {}
-        self._train(evidence, hypothesis)
+        self._train(evidence, hypothesis, hprob)
 
     def prob(self, value, given=None) -> float:
         """Returns probability that this variable will take value `value`.
@@ -193,7 +242,7 @@ class BayesNode:
         else:
             return self.ppt[value]
 
-    def _train(self, evidence, hypothesis) -> None:
+    def _train(self, evidence, hypothesis, hprob) -> None:
         """Generates the conditional probability table for this node.
 
         :param evidence: value list for this variable in order of observation
@@ -205,8 +254,15 @@ class BayesNode:
             self.cpt[row[0]][row[1]] += 1
         for e in set(evidence):
             for h in set(hypothesis):
-                self.cpt[e][h] = self.cpt[e][h] / self.ppt[e]
+                self.cpt[e][h] = self.cpt[e][h] / evidence.count(e)
 
     def get_distribution(self) -> Tuple[dict, dict]:
         """Returns the prior/conditional probability table of this node."""
         return self.ppt, self.cpt
+
+    def tabulate_distribution(self):
+        """Returns tabular format for probability distributions."""
+        prior_table = [(val, prob) for val, prob in self.ppt.items()]
+        cond_table = [(node, hyp, prob) for node in self.cpt.keys()
+                      for hyp, prob in self.cpt[node].items()]
+        return prior_table, cond_table
